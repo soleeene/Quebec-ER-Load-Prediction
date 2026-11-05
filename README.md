@@ -14,9 +14,87 @@ Group project for the Data Lakes and Data Warehouse project.
 
 ## Québec ER load data
 [API doc](https://sante.handled.tools/en/donnees)
-Hourly load data for many hospitals. Data like hospital name, hospital id, belonging establishement, region code and name (interesting for data aggregation).
-For each hospital with data, current number of waiting patients, number of functional stretcher capacity, number of occupied stretchers, stretcher occupancy rate, patients waiting 24+ hours on a stretcher (27), patients waiting 48+ hours on a stretcher, total patients currently in the ER, number of patients waiting to see a doctor, average stretcher stay, average ambulatory (non-stretcher) stay, timestamp of the reading (2026-09-25 14:00)
-Only the last week of data is retrievable through the API, the rest is accessible through a csv file downloadable on the website [link](https://sante.handled.tools/archive-120-urgences-horaire.csv).
+
+### ER Load Ingestion
+
+Hourly Lambda that pulls Quebec ER data from `sante.handled.tools` (MSSS open data, CC-BY 4.0) and writes it to S3.
+
+### Outputs
+
+All under `s3://$S3_BUCKET/$S3_PREFIX/` (default prefix `er-load`):
+
+| Path | Format | Content | Written |
+|---|---|---|---|
+| `facilities/facilities.json` | JSON array | Facility directory | Every run (overwritten) |
+| `now/year=YYYY/month=MM/day=DD/hour=HH/now.jsonl.gz` | gzipped JSONL | Current status of all ERs | Every run (one file per hour) |
+| `history/facility_id={id}/history.jsonl.gz` | gzipped JSONL | Full history per facility | Daily at `HISTORY_HOUR_UTC` (default 03h), or when missing for a facility |
+
+### Schemas
+
+**facilities** (one object per facility, ~120)
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Facility ID (join key) |
+| `name` | string | Facility name |
+| `establishment` | string | Parent health establishment |
+| `region_code` | string | Region code (`"01"`…) |
+| `region_name` | string | Region name |
+| `address` | string | Street address, city, postal code |
+| `lat`, `lng` | float | Coordinates |
+| `phone` | string \| null | Always null in current data |
+| `slug` | string | URL slug |
+
+**now** (one row per ER, per hourly snapshot)
+
+| Field | Type | Description |
+|---|---|---|
+| `_fetched_at` | string | Snapshot time, UTC ISO 8601 (added by the Lambda) |
+
+**now** (one row per ER, per hourly snapshot)
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Facility ID (joins to `facilities.id`, `history.facility_id`) |
+| `name` | string | Facility name |
+| `establishment` | string | Parent health establishment |
+| `regionCode` | string | Region code |
+| `region` | string | Region name |
+| `civFonct` | int | Functional stretchers (capacity) |
+| `civOcc` | int | Occupied stretchers |
+| `occPct` | int | Stretcher occupancy in % (`civOcc / civFonct`) |
+| `p24h` | int | Patients on stretcher > 24 h (likely) |
+| `p48h` | int | Patients on stretcher > 48 h (likely) |
+| `present` | int | Patients currently in the ER |
+| `waiting` | int | Patients waiting |
+| `dmsCiviereMin` | int | Average stay on stretcher, minutes (likely) |
+| `dmsAmbMin` | int | Average stay of ambulatory patients, minutes (likely) |
+| `ts` | string | Hour the MSSS data refers to, e.g. `2026-10-28T11:00` (no timezone) |
+| `docWaitMin` | int | Wait to see a doctor, minutes (likely) |
+| `docWaitingDoc` | int | Patients waiting to see a doctor (likely) |
+| `docWaitAt` | string | Timestamp of the doctor-wait figure |
+| `_fetched_at` | string | Fetch time, UTC ISO 8601 (added by the Lambda) |
+
+**history** (one row per facility per hour)
+
+| Field | Type | Description |
+|---|---|---|
+| `ts` | string | Hour, e.g. `2026-10-21T17:00` (no timezone) |
+| `occ_pct` | int | ER occupancy in % (can exceed 100) |
+| `waiting` | int | Patients waiting |
+| `present` | int | Patients present |
+| `facility_id` | string | Facility ID (added if missing) |
+
+### Return value
+
+```json
+{"fetched_at": "...", "facilities": 0, "now_rows": 0,
+ "history_ok": 0, "history_failed": [], "history_rows": 0}
+```
+
+### Config
+
+`S3_BUCKET` (required), `S3_PREFIX`, `HISTORY_HOUR_UTC`, `FORCE_HISTORY`, `MAX_WORKERS`
 
 This service needs no authentification. The data is json-like (can be converted into (lists of) dictionnaries).
 
